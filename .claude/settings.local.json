@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3 Tools/autotest/sim_vehicle.py --help)",
+      "Bash(mavproxy.py --help)",
+      "Bash(python3:*)",
+      "Bash(echo \"EXIT: $?\")",
+      "Bash(pkill -f \"arduplane\")",
+      "Bash(pkill -f arduplane)",
+      "Bash(echo EXIT:$?)"
+    ]
+  }
+}
