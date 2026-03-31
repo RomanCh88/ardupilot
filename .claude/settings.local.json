@@ -7,7 +7,10 @@
       "Bash(echo \"EXIT: $?\")",
       "Bash(pkill -f \"arduplane\")",
       "Bash(pkill -f arduplane)",
-      "Bash(echo EXIT:$?)"
+      "Bash(echo EXIT:$?)",
+      "Bash(wc -l Tools/autotest/ArduPlane_Tests/Dnipro_to_Kyiv/logs/python/*.log)",
+      "Bash(pkill -f auto_fly.py)",
+      "Bash(pkill -f arduplane.*sitl)"
     ]
   }
 }
