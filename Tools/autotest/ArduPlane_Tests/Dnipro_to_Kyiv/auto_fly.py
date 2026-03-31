@@ -623,12 +623,12 @@ def monitor_drone_flight(mav, n_waypoints, drone_id):
             last_wp = msg.seq
             print(f'[{label}] >>> WP {msg.seq}: {WP_NAMES.get(msg.seq, f"WP {msg.seq}")}')
 
-            # Reached the final waypoint — switch to LAND mode
+            # Reached the NAV_LAND waypoint — ArduPlane handles the landing
+            # automatically in AUTO mode; just mark this drone complete.
             if last_wp >= final_wp_seq:
-                set_mode(mav, 'LAND', label=label)
                 with _swarm_lock:
                     _swarm[drone_id]['complete'] = True
-                print(f'[{label}] === MISSION COMPLETE — LAND mode engaged ===')
+                print(f'[{label}] === LANDING (NAV_LAND reached) ===')
                 return
 
         elif mtype == 'GLOBAL_POSITION_INT':
@@ -808,8 +808,53 @@ if __name__ == '__main__':
     MESH_RANGE_M = args.mesh_range
     LAUNCH_DELAY = args.launch_delay
 
-    # Parse mission and build all derived config
+    # Parse mission, then append a descent waypoint + NAV_LAND so ArduPlane has
+    # a proper glide-slope approach instead of arriving directly overhead at
+    # cruise altitude with no room to descend.
     base_wps = parse_mission(MISSION_FILE)
+    nav_cmds = {16, 17, 21, 22, 92, 177, 189}
+    real_nav  = [wp for wp in base_wps
+                 if wp['command'] in nav_cmds
+                 and (abs(wp['x']) > 0.001 or abs(wp['y']) > 0.001)]
+
+    if real_nav and real_nav[-1]['command'] != 21:
+        last_nav = real_nav[-1]
+
+        # Bearing of the final mission leg (used to extend the approach)
+        approach_brg = (
+            _bearing(real_nav[-2]['x'], real_nav[-2]['y'],
+                     last_nav['x'],     last_nav['y'])
+            if len(real_nav) >= 2 else 0.0
+        )
+
+        # 3 km further along the route — gives the plane room to descend
+        appr_lat, appr_lon = _offset_latlon(
+            last_nav['x'], last_nav['y'], approach_brg, 3000)
+
+        next_seq = max(wp['seq'] for wp in base_wps) + 1
+        frame    = last_nav['frame']
+
+        # Descent WP: drop from cruise altitude to 100 m over those 3 km
+        base_wps.append({
+            'seq': next_seq, 'current': 0, 'frame': frame,
+            'command': 16,   # NAV_WAYPOINT at 100 m — triggers descent
+            'param1': 0.0, 'param2': 0.0, 'param3': 0.0, 'param4': 0.0,
+            'x': appr_lat, 'y': appr_lon, 'z': 100.0,
+            'autocontinue': 1,
+        })
+
+        # NAV_LAND at the same position — ArduPlane handles the final flare
+        base_wps.append({
+            'seq': next_seq + 1, 'current': 0, 'frame': frame,
+            'command': 21,   # NAV_LAND
+            'param1': 0.0, 'param2': 0.0, 'param3': 0.0, 'param4': 0.0,
+            'x': appr_lat, 'y': appr_lon, 'z': 0.0,
+            'autocontinue': 1,
+        })
+        print(f'Auto-appended descent WP (100 m) + NAV_LAND '
+              f'at ({appr_lat:.5f}, {appr_lon:.5f}), '
+              f'bearing {approach_brg:.1f}°, 3 km past last WP')
+
     build_mission_config(base_wps)
 
     # Generate per-drone lateral / altitude offsets
