@@ -87,6 +87,9 @@ html, body { width:100%; height:100%; background:#000; overflow:hidden; }
   <div class="row" id="leg-mesh-out">
     <span class="line-seg" style="background:#ef4444"></span>Mesh link (out of range)
   </div>
+  <div class="row" id="leg-mesh-range">
+    <span class="dot" style="background:rgba(100,180,255,0.22);border:1px solid rgba(100,180,255,0.5);border-radius:50%"></span>Mesh range
+  </div>
 </div>
 
 <script>
@@ -98,9 +101,10 @@ const MESH_RANGE = __MESH_RANGE__;
 
 // Hide mesh UI in single-drone mode
 if (NUM_DRONES < 2) {
-  document.getElementById('mesh-row').style.display    = 'none';
-  document.getElementById('leg-mesh-in').style.display  = 'none';
-  document.getElementById('leg-mesh-out').style.display = 'none';
+  document.getElementById('mesh-row').style.display       = 'none';
+  document.getElementById('leg-mesh-in').style.display    = 'none';
+  document.getElementById('leg-mesh-out').style.display   = 'none';
+  document.getElementById('leg-mesh-range').style.display = 'none';
 }
 
 const DRONE_COLORS = [
@@ -176,9 +180,11 @@ WAYPOINTS.forEach(w => {
 });
 
 // ── Initial camera centred on route midpoint ──────────────────────────────────
+// pitch: -90° = straight down so the camera looks exactly at the midpoint.
+// Any other pitch with heading:0 causes a northward offset in the focal point.
 viewer.camera.flyTo({
-  destination : Cesium.Cartesian3.fromDegrees(__ROUTE_LON__, __ROUTE_LAT__, 900000),
-  orientation : { heading: 0, pitch: Cesium.Math.toRadians(-55), roll: 0 },
+  destination : Cesium.Cartesian3.fromDegrees(__ROUTE_LON__, __ROUTE_LAT__, 500000),
+  orientation : { heading: 0, pitch: Cesium.Math.toRadians(-90), roll: 0 },
   duration    : 2,
 });
 
@@ -230,6 +236,27 @@ function ensureDroneEntities(id) {
       }),
     },
   });
+
+  if (NUM_DRONES >= 2) {
+    state.rangeEntity = viewer.entities.add({
+      position: new Cesium.CallbackProperty(() => state.cartVal, false),
+      ellipse: {
+        semiMajorAxis: MESH_RANGE,
+        semiMinorAxis: MESH_RANGE,
+        // EllipseGraphics ignores the entity position's altitude; set height
+        // explicitly via a callback to match the drone's current altitude so
+        // the circle isn't buried at the ellipsoid surface (z-fighting).
+        height: new Cesium.CallbackProperty(() => {
+          const c = Cesium.Cartographic.fromCartesian(state.cartVal);
+          return c ? c.height : 0;
+        }, false),
+        material    : Cesium.Color.fromCssColorString(hex).withAlpha(0.12),
+        outline     : true,
+        outlineColor: Cesium.Color.fromCssColorString(hex).withAlpha(0.50),
+        outlineWidth: 1.0,
+      },
+    });
+  }
 
   droneState[id] = state;
 }

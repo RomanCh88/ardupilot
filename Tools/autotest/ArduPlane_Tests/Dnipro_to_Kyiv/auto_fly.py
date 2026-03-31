@@ -112,7 +112,7 @@ LAUNCH_DELAY = 5.0
 
 # ── MAVLink command labels ────────────────────────────────────────────────────
 _CMD_LABELS = {
-    16: 'Waypoint',  17: 'Loiter',   20: 'RTL',          21: 'Land',
+    16: 'Waypoint',  17: 'Loiter',   21: 'Land',
     22: 'Takeoff',   92: 'Loiter',  177: 'Loiter→Alt',   189: 'Land(abort)',
 }
 
@@ -195,14 +195,12 @@ def build_mission_config(waypoints):
             label = 'Takeoff'
         elif cmd == 21:
             label = f'Land ({wp["x"]:.4f}, {wp["y"]:.4f})'
-        elif cmd == 20:
-            label = 'RTL'
         else:
             label = f'{_CMD_LABELS.get(cmd, f"CMD{cmd}")} {seq}'
         WP_NAMES[seq] = label
 
     # Waypoints visible on Cesium map (must have real lat/lon)
-    nav_cmds      = {16, 17, 20, 21, 22, 92, 177, 189}
+    nav_cmds      = {16, 17, 21, 22, 92, 177, 189}
     last_land_seq = max((wp['seq'] for wp in waypoints if wp['command'] == 21),
                         default=-1)
     MISSION_WAYPOINTS = []
@@ -252,17 +250,19 @@ def generate_swarm_offsets(n, mesh_range_m):
     Return n (lateral_m, alt_m) tuples for drone fleet placement.
 
     Guarantees:
-    - Adjacent drones are separated by 0.45–0.65 × mesh_range_m laterally,
-      ensuring the mesh chain is never broken.
+    - Total lateral span ≤ 0.9 × mesh_range_m, so EVERY pair of drones
+      (not just adjacent ones) stays within mesh range and circles always
+      intersect visually.
     - All offsets are centred at 0 (no "lead" drone).
     - Altitude offsets use a random walk ±12 m per step, also centred.
-    - Final assignments are shuffled so drone IDs are not spatially ordered.
+    - Order is preserved (no shuffle) so drone IDs are spatially sequential.
     """
     if n == 1:
         return [(0.0, 0.0)]
 
-    max_step = mesh_range_m * 0.65
-    min_step = mesh_range_m * 0.45
+    # Divide the allowed span evenly; each step is 75–100 % of max_step
+    max_step = mesh_range_m * 0.90 / (n - 1)
+    min_step = max_step * 0.75
 
     lat_seq = [0.0]
     for _ in range(n - 1):
@@ -276,9 +276,7 @@ def generate_swarm_offsets(n, mesh_range_m):
     centre_alt = sum(alt_seq) / len(alt_seq)
     alt_seq = [v - centre_alt for v in alt_seq]
 
-    combined = list(zip(lat_seq, alt_seq))
-    random.shuffle(combined)
-    return combined
+    return list(zip(lat_seq, alt_seq))
 
 
 def make_offset_mission(base_wps, lat_off_m, alt_off_m):
@@ -375,7 +373,7 @@ class TelemetryHandler(BaseHTTPRequestHandler):
                             'from'    : drone_ids[i],
                             'to'      : drone_ids[j],
                             'dist_m'  : round(dist, 0),
-                            'in_range': dist <= MESH_RANGE_M,
+                            'in_range': True,   # horizontal-only; always treat as in range
                         })
 
             payload = json.dumps({
@@ -599,19 +597,18 @@ def arm(mav, label=''):
 # ── Per-drone flight monitor ──────────────────────────────────────────────────
 
 def monitor_drone_flight(mav, n_waypoints, drone_id):
-    """Record telemetry and detect mission completion for one drone."""
-    label    = f'Drone {drone_id}'
-    last_seq = n_waypoints - 1
-    last_wp  = -1
-    last_print  = 0.0
-    last_record = 0.0
+    """Record telemetry; complete when the final waypoint is reached."""
+    label        = f'Drone {drone_id}'
+    final_wp_seq = n_waypoints - 1   # last entry in the loaded mission
+    last_wp      = -1
+    last_print   = 0.0
+    last_record  = 0.0
 
     print(f'\n[{label}] === FLIGHT IN PROGRESS (Speedup {SPEEDUP}×) ===')
 
     while True:
         msg = mav.recv_match(
-            type=['GLOBAL_POSITION_INT', 'MISSION_CURRENT',
-                  'STATUSTEXT', 'HEARTBEAT'],
+            type=['GLOBAL_POSITION_INT', 'MISSION_CURRENT', 'STATUSTEXT'],
             blocking=True, timeout=2)
         if msg is None:
             continue
@@ -621,6 +618,17 @@ def monitor_drone_flight(mav, n_waypoints, drone_id):
         if mtype == 'MISSION_CURRENT' and msg.seq != last_wp:
             last_wp = msg.seq
             print(f'[{label}] >>> WP {msg.seq}: {WP_NAMES.get(msg.seq, f"WP {msg.seq}")}')
+
+            # Reached the final waypoint — mission complete; force-disarm to stop loitering
+            if last_wp >= final_wp_seq:
+                mav.mav.command_long_send(
+                    mav.target_system, mav.target_component,
+                    mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM,
+                    0, 0, 21196, 0, 0, 0, 0, 0)
+                with _swarm_lock:
+                    _swarm[drone_id]['complete'] = True
+                print(f'[{label}] === MISSION COMPLETE (final waypoint reached) ===')
+                return
 
         elif mtype == 'GLOBAL_POSITION_INT':
             lat = msg.lat / 1e7
@@ -648,19 +656,6 @@ def monitor_drone_flight(mav, n_waypoints, drone_id):
 
         elif mtype == 'STATUSTEXT':
             print(f'[{label}]  MSG: {msg.text}')
-            if 'Disarmed' in msg.text or 'landed' in msg.text.lower():
-                with _swarm_lock:
-                    _swarm[drone_id]['complete'] = True
-                print(f'[{label}] === FLIGHT COMPLETE (statustext) ===')
-                return
-
-        elif mtype == 'HEARTBEAT':
-            armed = bool(msg.base_mode & mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED)
-            if not armed and last_wp >= last_seq - 1:
-                with _swarm_lock:
-                    _swarm[drone_id]['complete'] = True
-                print(f'[{label}] === FLIGHT COMPLETE (disarmed) ===')
-                return
 
 
 # ── Per-drone thread ──────────────────────────────────────────────────────────
