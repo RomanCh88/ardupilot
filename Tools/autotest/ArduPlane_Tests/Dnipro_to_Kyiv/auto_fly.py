@@ -623,15 +623,12 @@ def monitor_drone_flight(mav, n_waypoints, drone_id):
             last_wp = msg.seq
             print(f'[{label}] >>> WP {msg.seq}: {WP_NAMES.get(msg.seq, f"WP {msg.seq}")}')
 
-            # Reached the final waypoint — mission complete; force-disarm to stop loitering
+            # Reached the final waypoint — switch to LAND mode
             if last_wp >= final_wp_seq:
-                mav.mav.command_long_send(
-                    mav.target_system, mav.target_component,
-                    mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM,
-                    0, 0, 21196, 0, 0, 0, 0, 0)
+                set_mode(mav, 'LAND', label=label)
                 with _swarm_lock:
                     _swarm[drone_id]['complete'] = True
-                print(f'[{label}] === MISSION COMPLETE (final waypoint reached) ===')
+                print(f'[{label}] === MISSION COMPLETE — LAND mode engaged ===')
                 return
 
         elif mtype == 'GLOBAL_POSITION_INT':
