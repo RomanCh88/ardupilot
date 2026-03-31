@@ -109,13 +109,17 @@ const DRONE_COLORS = [
 ];
 
 // ── Cesium viewer ─────────────────────────────────────────────────────────────
+Cesium.Ion.defaultAccessToken = undefined;
+
 const viewer = new Cesium.Viewer('cesiumContainer', {
-  imageryProvider: new Cesium.UrlTemplateImageryProvider({
-    url         : 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-    minimumLevel: 0,
-    maximumLevel: 18,
-    credit      : '&copy; OpenStreetMap contributors',
-  }),
+  baseLayer: new Cesium.ImageryLayer(
+    new Cesium.UrlTemplateImageryProvider({
+      url         : 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+      minimumLevel: 0,
+      maximumLevel: 18,
+      credit      : new Cesium.Credit('\u00a9 OpenStreetMap contributors'),
+    })
+  ),
   terrainProvider     : new Cesium.EllipsoidTerrainProvider(),
   baseLayerPicker     : false,
   geocoder            : false,
