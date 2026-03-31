@@ -90,6 +90,10 @@ def setup_logging():
 _swarm      = {}
 _swarm_lock = threading.Lock()
 
+# Barrier that synchronises the arm step across all drone threads so every
+# drone lifts off at the same simulated instant (set in __main__).
+_arm_barrier: threading.Barrier = None  # type: ignore
+
 # ── Mission config globals (populated by build_mission_config) ────────────────
 HOME             = ''    # "lat,lon,alt,hdg" string for SITL --home
 HOME_LAT         = 0.0
@@ -661,15 +665,20 @@ def monitor_drone_flight(mav, n_waypoints, drone_id):
 # ── Per-drone thread ──────────────────────────────────────────────────────────
 
 def run_drone(drone_id, offset_wps, home_str):
-    """Launch one SITL instance, upload mission, arm and monitor flight."""
+    """Launch one SITL instance, upload mission, arm and monitor flight.
+
+    SITL processes are staggered by LAUNCH_DELAY seconds (real time) so each
+    instance has time to bind its TCP port before the next one starts.
+    All drones then rendezvous at a barrier before arming, so every aircraft
+    lifts off at the same simulated instant regardless of start stagger.
+    """
     port  = SITL_PORT + drone_id * 10
     label = f'Drone {drone_id}'
 
-    # Stagger launches so each SITL has time to bind its port
+    # Small real-time stagger — only needed so each SITL can claim its port
+    # before the next process tries to bind the next one.
     if drone_id > 0:
-        delay = LAUNCH_DELAY * drone_id
-        print(f'[{label}] Waiting {delay:.1f}s before launch ...')
-        time.sleep(delay)
+        time.sleep(LAUNCH_DELAY * drone_id)
 
     mission_path = write_temp_mission(offset_wps, drone_id)
 
@@ -713,6 +722,11 @@ def run_drone(drone_id, offset_wps, home_str):
 
         set_mode(mav, 'AUTO', label=label)
         time.sleep(1)
+
+        # ── Synchronise: wait until every drone is ready before any arms ──────
+        print(f'[{label}] Ready — waiting for all drones before arming ...')
+        _arm_barrier.wait()
+
         arm(mav, label=label)
         time.sleep(2)
 
@@ -720,6 +734,12 @@ def run_drone(drone_id, offset_wps, home_str):
 
     except Exception as exc:
         print(f'[{label}] ERROR: {exc}')
+        # Release barrier in case this drone errored before reaching it,
+        # so the other threads are not left waiting forever.
+        try:
+            _arm_barrier.abort()
+        except Exception:
+            pass
         with _swarm_lock:
             _swarm[drone_id]['complete'] = True
     finally:
@@ -755,9 +775,10 @@ def parse_args():
         metavar='M',
         help='Max mesh radio range in metres (default: 300)')
     parser.add_argument(
-        '--launch-delay', type=float, default=5.0,
+        '--launch-delay', type=float, default=2.0,
         metavar='D',
-        help='Seconds between sequential drone launches (default: 5.0)')
+        help='Real-time seconds between sequential SITL starts (default: 2.0); '
+             'all drones arm simultaneously regardless of this delay')
     return parser.parse_args()
 
 
@@ -822,6 +843,11 @@ if __name__ == '__main__':
     print(f'\nCesium map → http://127.0.0.1:{WEB_PORT}/')
     threading.Timer(2.0,
         lambda: webbrowser.open(f'http://127.0.0.1:{WEB_PORT}/')).start()
+
+    # Barrier: all drone threads wait here until every one has finished its
+    # SITL-start / connect / upload / set-mode sequence, then they all arm
+    # simultaneously so no drone gets a head start in simulated time.
+    _arm_barrier = threading.Barrier(NUM_DRONES)
 
     # Build per-drone missions and home strings, then launch threads
     threads = []

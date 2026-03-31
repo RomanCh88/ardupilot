@@ -243,13 +243,10 @@ function ensureDroneEntities(id) {
       ellipse: {
         semiMajorAxis: MESH_RANGE,
         semiMinorAxis: MESH_RANGE,
-        // EllipseGraphics ignores the entity position's altitude; set height
-        // explicitly via a callback to match the drone's current altitude so
-        // the circle isn't buried at the ellipsoid surface (z-fighting).
-        height: new Cesium.CallbackProperty(() => {
-          const c = Cesium.Cartographic.fromCartesian(state.cartVal);
-          return c ? c.height : 0;
-        }, false),
+        // All range circles share one fixed altitude so they are coplanar and
+        // visually intersect when drones are within range of each other.
+        // A small positive value avoids z-fighting with the globe surface.
+        height: 200,
         material    : Cesium.Color.fromCssColorString(hex).withAlpha(0.12),
         outline     : true,
         outlineColor: Cesium.Color.fromCssColorString(hex).withAlpha(0.50),
